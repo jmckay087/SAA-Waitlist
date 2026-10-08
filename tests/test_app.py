@@ -1,0 +1,164 @@
+import csv
+import io
+import re
+import sqlite3
+import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from app import create_app
+
+
+class WaitlistTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.database = str(Path(self.temp.name) / 'test.sqlite3')
+        self.config = {'TESTING':True,'SECRET_KEY':'test-secret-only','DATABASE':self.database,'STAFF_PASSWORD':''}
+        self.app = create_app(self.config)
+        self.client = self.app.test_client()
+        with self.client.session_transaction() as session:
+            session['csrf'] = 'test-token'
+        self.headers = {'X-CSRF-Token':'test-token'}
+        self.flights = self.day()['flights']
+        self.flight = self.flights[0]['id']
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def day(self, selected='2026-10-09'):
+        return self.client.get('/api/day?date='+selected).get_json()
+
+    def add(self,name='Test Guest',contact='021 000 0000',flight=None):
+        response = self.client.post(f'/api/flights/{flight or self.flight}/passengers',json={'name':name,'contact':contact,'notes':''},headers=self.headers)
+        self.assertEqual(response.status_code,201,response.get_json())
+        return response.get_json()['id']
+
+    def update(self,id_,data):
+        return self.client.patch(f'/api/passengers/{id_}',json=data,headers=self.headers)
+
+    def queue(self,flight=None):
+        row = next(f for f in self.day()['flights'] if f['id'] == (flight or self.flight))
+        return [p for p in row['passengers'] if p['status']=='waiting']
+
+    def test_photo_schedule_and_repeatability(self):
+        self.assertEqual(len(self.flights),11)
+        self.assertEqual([(f['departure'],f['name']) for f in self.flights if f['departure']=='13:30'],[
+            ('13:30','Milford Sound Flight + Landing'),('13:30','Milford Sound Flyover'),
+            ('13:30','Mt Aspiring & Glaciers'),('13:30','Mt Cook & Glaciers')])
+        self.assertEqual([f['id'] for f in self.day()['flights']],[f['id'] for f in self.flights])
+        create_app(self.config)
+        self.assertEqual(len(self.client.get('/api/schedule').get_json()['schedule']),11)
+
+    def test_entries_persist_across_app_restart(self):
+        id_=self.add('Hana Māori','hana@example.test')
+        second = create_app(self.config).test_client()
+        row=second.get('/api/day?date=2026-10-09').get_json()['flights'][0]['passengers'][0]
+        self.assertEqual((row['id'],row['name'],row['contact']),(id_,'Hana Māori','hana@example.test'))
+
+    def test_fifo_and_move_up_down_boundaries(self):
+        ids=[self.add(name) for name in ['Guest One','Guest Two','Guest Three']]
+        self.assertEqual([p['id'] for p in self.queue()],ids)
+        self.assertEqual(self.update(ids[2],{'direction':'up'}).status_code,200)
+        self.assertEqual([p['id'] for p in self.queue()],[ids[0],ids[2],ids[1]])
+        self.update(ids[0],{'direction':'up'})
+        self.update(ids[0],{'direction':'down'})
+        self.assertEqual([p['id'] for p in self.queue()],[ids[2],ids[0],ids[1]])
+
+    def test_archive_and_restore_at_bottom(self):
+        first=self.add('First Person'); second=self.add('Second Person')
+        self.update(first,{'status':'archived'})
+        self.assertEqual([p['id'] for p in self.queue()],[second])
+        self.update(first,{'status':'waiting'})
+        self.assertEqual([p['id'] for p in self.queue()],[second,first])
+
+    def test_move_to_another_flight_and_edit_details(self):
+        first=self.add(); target=self.flights[1]['id']; existing=self.add('Already There',flight=target)
+        result=self.update(first,{'flight_id':target,'name':'Updated Name','contact':'new@example.test','notes':'Call after lunch'})
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(self.queue(),[])
+        self.assertEqual([p['id'] for p in self.queue(target)],[existing,first])
+        self.assertEqual(self.queue(target)[1]['notes'],'Call after lunch')
+
+    def test_daily_lists_are_separate(self):
+        self.add()
+        next_day=self.day('2026-10-10')['flights']
+        self.assertEqual(len(next_day),11)
+        self.assertTrue(all(not f['passengers'] for f in next_day))
+        self.assertNotEqual(next_day[0]['id'],self.flight)
+
+    def test_validation_does_not_change_existing_entry(self):
+        id_=self.add()
+        for data in [{'name':''},{'contact':123},{'flight_id':99999},{'status':'seated'},{'notes':'x'*501}]:
+            self.assertEqual(self.update(id_,data).status_code,400)
+        self.assertEqual(self.queue()[0]['name'],'Test Guest')
+        self.assertEqual(self.client.get('/api/day?date=invalid').status_code,400)
+
+    def test_csrf_and_origin_are_checked(self):
+        path=f'/api/flights/{self.flight}/passengers'
+        self.assertEqual(self.client.post(path,json={'name':'Guest'}).status_code,403)
+        headers={**self.headers,'Origin':'https://different.example'}
+        self.assertEqual(self.client.post(path,json={'name':'Guest'},headers=headers).status_code,403)
+        self.assertEqual(self.queue(),[])
+
+    def test_schedule_edit_preserves_existing_days(self):
+        template=self.flights[0]['schedule_id']
+        response=self.client.patch(f'/api/schedule/{template}',json={'name':'Changed Flight','departure':'08:15'},headers=self.headers)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.day()['flights'][0]['departure'],'08:00')
+        self.assertEqual(self.day('2026-10-10')['flights'][0]['departure'],'08:15')
+        self.client.patch(f'/api/schedule/{template}',json={'active':False},headers=self.headers)
+        self.assertEqual(len(self.day()['flights']),11)
+        self.assertEqual(len(self.day('2026-10-11')['flights']),10)
+
+    def test_extra_flight_affects_only_one_day(self):
+        response=self.client.post('/api/flights',json={'name':'Extra Departure','departure':'15:00','date':'2026-10-09'},headers=self.headers)
+        self.assertEqual(response.status_code,201)
+        self.assertEqual(len(self.day()['flights']),12)
+        self.assertEqual(len(self.day('2026-10-10')['flights']),11)
+        self.assertEqual(len(self.client.get('/api/schedule').get_json()['schedule']),11)
+
+    def test_flight_edit_keeps_waitlist(self):
+        self.add()
+        response=self.client.patch(f'/api/flights/{self.flight}',json={'name':'Updated Route','departure':'07:45'},headers=self.headers)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.queue()[0]['name'],'Test Guest')
+        self.assertEqual(self.day()['flights'][0]['name'],'Updated Route')
+
+    def test_csv_export_and_formula_protection(self):
+        self.add('=SUM(A1:A2)','+6421000000')
+        response=self.client.get('/api/export?date=2026-10-09')
+        rows=list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['name'],"'=SUM(A1:A2)")
+        self.assertEqual(rows[0]['contact'],"'+6421000000")
+        self.assertEqual(self.client.get('/api/export?date=bad').status_code,400)
+
+    def test_authentication_guards_data_and_logout(self):
+        self.app.config['STAFF_PASSWORD']='test-password'
+        self.assertEqual(self.client.get('/api/day').status_code,401)
+        self.assertEqual(self.client.get('/api/export').status_code,401)
+        self.assertEqual(self.client.get('/').status_code,302)
+        page=self.client.get('/login').get_data(as_text=True)
+        token=re.search(r'name="csrf" value="([^"]+)"',page).group(1)
+        result=self.client.post('/login',data={'password':'test-password','csrf':token})
+        self.assertEqual(result.status_code,302)
+        self.assertEqual(self.client.get('/api/day').status_code,200)
+        with self.client.session_transaction() as session: token=session['csrf']
+        self.assertEqual(self.client.post('/api/logout',headers={'X-CSRF-Token':token}).status_code,200)
+        self.assertEqual(self.client.get('/api/day').status_code,401)
+
+    def test_simultaneous_additions_have_distinct_positions(self):
+        def add_guest(index):
+            client=self.app.test_client()
+            with client.session_transaction() as session: session['csrf']='parallel'
+            response=client.post(f'/api/flights/{self.flight}/passengers',json={'name':f'Guest {index}','contact':''},headers={'X-CSRF-Token':'parallel'})
+            return response.status_code
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            self.assertEqual(list(executor.map(add_guest,range(8))),[201]*8)
+        positions=[p['position'] for p in self.queue()]
+        self.assertEqual(positions,list(range(1,9)))
+
+
+if __name__=='__main__':
+    unittest.main()
