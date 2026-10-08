@@ -66,11 +66,21 @@ def create_app(test_config=None):
                 id INTEGER PRIMARY KEY, flight_id INTEGER NOT NULL REFERENCES flights(id),
                 name TEXT NOT NULL, contact TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'waiting' CHECK(status IN ('waiting','archived')),
-                position INTEGER NOT NULL, created_at TEXT NOT NULL
+                position INTEGER NOT NULL, created_at TEXT NOT NULL,
+                party_size INTEGER NOT NULL DEFAULT 1 CHECK(party_size BETWEEN 1 AND 100)
             );
         ''')
+        columns = {row[1] for row in connection.execute('PRAGMA table_info(passengers)')}
+        if 'party_size' not in columns:
+            backup = database.with_name(database.name + '.before-group-size.backup')
+            if not backup.exists():
+                with sqlite3.connect(backup) as destination:
+                    connection.backup(destination)
+                backup.chmod(0o600)
+        connection.execute('BEGIN IMMEDIATE')
+        if 'party_size' not in {row[1] for row in connection.execute('PRAGMA table_info(passengers)')}:
+            connection.execute('ALTER TABLE passengers ADD COLUMN party_size INTEGER NOT NULL DEFAULT 1 CHECK(party_size BETWEEN 1 AND 100)')
         if app.config['SEED_SCHEDULE']:
-            connection.execute('BEGIN IMMEDIATE')
             if not connection.execute("SELECT 1 FROM metadata WHERE key='schedule_seeded'").fetchone():
                 defaults = json.loads((ROOT / 'default_schedule.json').read_text())
                 connection.executemany('INSERT INTO schedule (name,departure) VALUES (?,?)', [(f['name'],f['departure']) for f in defaults])
@@ -188,6 +198,12 @@ def create_app(test_config=None):
             raise ValidationError('Enter a departure time in 24-hour HH:MM format.')
         return name, departure
 
+    def group_size(data, default=1):
+        value = data.get('party_size', default)
+        if type(value) is not int or not 1 <= value <= 100:
+            raise ValidationError('Number of people must be a whole number between 1 and 100.')
+        return value
+
     def existing_flight(connection, flight_id):
         flight = connection.execute('SELECT * FROM flights WHERE id=?', (flight_id,)).fetchone()
         if not flight:
@@ -207,6 +223,44 @@ def create_app(test_config=None):
             for flight in flights:
                 flight['passengers'] = [dict(row) for row in connection.execute('SELECT * FROM passengers WHERE flight_id=? ORDER BY position,id', (flight['id'],))]
         return jsonify(date=selected, flights=flights)
+
+    @app.get('/api/week')
+    def week():
+        start = valid_date(request.args.get('start', datetime.now(NZ).date().isoformat()))
+        first = date.fromisoformat(start)
+        last = first + timedelta(days=6)
+        if last.year > 2100:
+            raise ValidationError('Choose a starting date on or before 25 December 2100.')
+        days = []
+        with connect() as connection:
+            # Preview recurring flights without creating future daily snapshots.
+            connection.execute('BEGIN')
+            schedule = [dict(row) for row in connection.execute('SELECT * FROM schedule WHERE active=1 ORDER BY departure,id')]
+            stored = [dict(row) for row in connection.execute('''
+                SELECT f.*, COUNT(CASE WHEN p.status='waiting' THEN 1 END) AS booking_count,
+                    COALESCE(SUM(CASE WHEN p.status='waiting' THEN p.party_size ELSE 0 END),0) AS people_waiting
+                FROM flights f LEFT JOIN passengers p ON p.flight_id=f.id
+                WHERE f.flight_date BETWEEN ? AND ? GROUP BY f.id
+                ORDER BY f.flight_date,f.departure,f.id''', (start,last.isoformat()))]
+            for offset in range(7):
+                selected = (first + timedelta(days=offset)).isoformat()
+                flights = [f for f in stored if f['flight_date'] == selected]
+                existing_templates = {f['schedule_id'] for f in flights}
+                for template in schedule:
+                    if template['id'] not in existing_templates:
+                        flights.append(dict(id=None,schedule_id=template['id'],flight_date=selected,
+                                            name=template['name'],departure=template['departure'],
+                                            booking_count=0,people_waiting=0))
+                flights.sort(key=lambda f: (f['departure'],f['id'] or float('inf'),f['schedule_id'] or 0))
+                days.append(dict(date=selected,flights=flights,flight_count=len(flights),
+                                 booking_count=sum(f['booking_count'] for f in flights),
+                                 people_waiting=sum(f['people_waiting'] for f in flights),
+                                 queued_flights=sum(f['booking_count'] > 0 for f in flights)))
+        return jsonify(start=start,end=last.isoformat(),days=days,
+                       flight_count=sum(d['flight_count'] for d in days),
+                       booking_count=sum(d['booking_count'] for d in days),
+                       people_waiting=sum(d['people_waiting'] for d in days),
+                       queued_flights=sum(d['queued_flights'] for d in days))
 
     @app.get('/api/schedule')
     def get_schedule():
@@ -257,11 +311,12 @@ def create_app(test_config=None):
         name = text(data, 'name', 2, 100)
         contact = text(data, 'contact', 0, 160)
         notes = text(data, 'notes', 0, 500)
+        party = group_size(data)
         with connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
             existing_flight(connection, flight_id)
-            cursor = connection.execute('''INSERT INTO passengers (flight_id,name,contact,notes,position,created_at)
-                VALUES (?,?,?,?,?,?)''', (flight_id,name,contact,notes,next_position(connection,flight_id),datetime.now(NZ).isoformat()))
+            cursor = connection.execute('''INSERT INTO passengers (flight_id,name,contact,notes,position,created_at,party_size)
+                VALUES (?,?,?,?,?,?,?)''', (flight_id,name,contact,notes,next_position(connection,flight_id),datetime.now(NZ).isoformat(),party))
         return jsonify(id=cursor.lastrowid), 201
 
     @app.patch('/api/passengers/<int:passenger_id>')
@@ -290,6 +345,7 @@ def create_app(test_config=None):
             name = text(data, 'name', 2, 100) if 'name' in data else passenger['name']
             contact = text(data, 'contact', 0, 160) if 'contact' in data else passenger['contact']
             notes = text(data, 'notes', 0, 500) if 'notes' in data else passenger['notes']
+            party = group_size(data, passenger['party_size'])
             flight_id = data.get('flight_id', passenger['flight_id'])
             if type(flight_id) is not int or flight_id < 1:
                 raise ValidationError('Choose a valid flight.')
@@ -297,14 +353,14 @@ def create_app(test_config=None):
             position = passenger['position']
             if flight_id != passenger['flight_id'] or (status == 'waiting' and passenger['status'] == 'archived'):
                 position = next_position(connection, flight_id)
-            connection.execute('UPDATE passengers SET name=?,contact=?,notes=?,status=?,flight_id=?,position=? WHERE id=?', (name,contact,notes,status,flight_id,position,passenger_id))
+            connection.execute('UPDATE passengers SET name=?,contact=?,notes=?,status=?,flight_id=?,position=?,party_size=? WHERE id=?', (name,contact,notes,status,flight_id,position,party,passenger_id))
             for changed_flight in {flight_id, passenger['flight_id']}:
                 ids = [row['id'] for row in connection.execute("SELECT id FROM passengers WHERE flight_id=? AND status='waiting' ORDER BY position,id", (changed_flight,))]
                 connection.executemany('UPDATE passengers SET position=? WHERE id=?', [(index+1,id_) for index,id_ in enumerate(ids)])
         return jsonify(ok=True)
 
     def export_rows(selected=None):
-        query = '''SELECT f.flight_date,f.departure,f.name AS flight,p.position,p.name,p.contact,p.notes,p.status,p.created_at
+        query = '''SELECT f.flight_date,f.departure,f.name AS flight,p.position,p.name,p.party_size,p.contact,p.notes,p.status,p.created_at
             FROM passengers p JOIN flights f ON f.id=p.flight_id'''
         params = ()
         if selected:

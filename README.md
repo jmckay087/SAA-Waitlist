@@ -1,6 +1,6 @@
 # Southern Alps Air flight waitlist
 
-A staff workspace for ordered daily flight waitlists. Select a date and flight, add a name and contact details, and use the arrows to change the call order. There is no capacity tracking, seat allocation, payment, or customer signup page.
+A staff workspace with a seven-day operations dashboard and ordered daily flight waitlists. Record the lead guest, number of people, and contact details for each waitlist booking. There is no capacity tracking, seat allocation, payment, or customer signup page.
 
 ## Run
 
@@ -24,11 +24,37 @@ python3 -m venv .venv
 
 The app listens locally on port 3000. To run the Flask development server instead, use `.venv/bin/python app.py`.
 
+## Update your Mac copy without losing waitlists
+
+1. Stop the running app with Ctrl+C in its Terminal window.
+2. Download the latest repository ZIP from GitHub and unzip it into a **new folder**. Keep the old app folder as a backup.
+3. Before launching the new copy, **copy the entire `instance` folder** from the old app folder into the new one. It contains your database, schedule edits, and session key. If you have never added data or run the old copy, this folder may not exist.
+4. In Terminal, type `python3` followed by a space, drag the **new folder's `launch.py`** into Terminal, and press Return.
+
+The first run upgrades the copied database automatically. A backup named `waitlist.sqlite3.before-group-size.backup` is created before adding group sizes to an older database. Existing bookings default to one person; edit each booking to record its actual group size. No existing names, contacts, notes, queue order, archives, or schedule edits are reset.
+
+If you configured `WAITLIST_DATABASE` to a custom location, it continues to select that database instead of the copied `instance` folder. Stop every app using that file before updating it.
+
+## Week-ahead dashboard
+
+- The app opens on **Dashboard**, showing seven days starting today in New Zealand time.
+- The summary distinguishes **people waiting** from **waitlist bookings**. A booking for four people counts as one booking and four people.
+- Day cards show waiting totals and departures. Choose a card to open that day's daily waitlist.
+- **Flight outlook** shows waiting people for each departure across the seven days. Choose a cell to open that flight's list.
+- **Waitlists to follow up** links to the first six departures in the selected period with active waitlists.
+- Use the arrows to move forward/back by seven days, or the date picker to choose the first day. In Daily waitlist, those controls move one day at a time.
+
+The outlook includes saved daily flights and previews the recurring schedule on days not yet opened. Viewing the dashboard does not create future daily snapshots or freeze the schedule. Archived bookings are excluded from all waiting totals.
+
+![Week-ahead dashboard with example test data](docs/dashboard.png)
+
+The screenshot uses example test data, not customer records.
+
 ## Use the waitlist
 
 - Select the operations date. “Today” uses New Zealand time.
-- Select a flight and choose **Add passenger**. The name is required; contact and notes are optional.
-- Entries start at the bottom. Use **↑ / ↓** to change the order. **Edit** can change contact details or move someone to another flight on the same date.
+- Select a flight and choose **Add booking**. Enter the lead guest and **number of people** (1–100); contact and notes are optional. Group size is not a flight-capacity limit.
+- Each booking occupies one position in the queue. Use **↑ / ↓** to change the order. **Edit** can change group size and contact details or move the booking to another flight on the same date.
 - **Archive** removes someone from the active queue. The Archived tab lets you restore them to the end of the list.
 - **Flight details** changes a single day's flight name or time. **Add a flight** creates an extra departure just for that date.
 - **Edit daily schedule** maintains recurring departures. Updates and removals affect days that have not yet been created. Existing daily flights and their waitlists are preserved. New recurring departures also appear when an already-created day is refreshed.
@@ -67,4 +93,4 @@ The export command refuses to overwrite an existing file. Spreadsheet formula-li
 .venv/bin/python -m pip check
 ```
 
-The automated suite covers persistence, day/flight isolation, queue order, archive/restore, moving and editing entries, simultaneous additions, schedule changes, exports, validation, CSRF, and staff authentication. Tests use temporary databases; they do not add customers to the operating database.
+The automated suite covers persistence, day/flight isolation, queue order, archive/restore, group-size validation and exports, migrating an older database, moving and editing entries, simultaneous additions, schedule changes, seven-day totals, schedule previews, exports, CSRF, and staff authentication. Tests use temporary databases; they do not add customers to the operating database.

@@ -138,6 +138,7 @@ class WaitlistTest(unittest.TestCase):
         self.app.config['STAFF_PASSWORD']='test-password'
         self.assertEqual(self.client.get('/api/day').status_code,401)
         self.assertEqual(self.client.get('/api/export').status_code,401)
+        self.assertEqual(self.client.get('/api/week').status_code,401)
         self.assertEqual(self.client.get('/').status_code,302)
         page=self.client.get('/login').get_data(as_text=True)
         token=re.search(r'name="csrf" value="([^"]+)"',page).group(1)
@@ -158,6 +159,75 @@ class WaitlistTest(unittest.TestCase):
             self.assertEqual(list(executor.map(add_guest,range(8))),[201]*8)
         positions=[p['position'] for p in self.queue()]
         self.assertEqual(positions,list(range(1,9)))
+
+    def test_group_size_is_saved_edited_and_exported(self):
+        response=self.client.post(f'/api/flights/{self.flight}/passengers',json={'name':'Family Booking','contact':'family@example.test','party_size':4},headers=self.headers)
+        self.assertEqual(response.status_code,201)
+        id_=response.get_json()['id']
+        self.assertEqual(self.queue()[0]['party_size'],4)
+        self.update(id_,{'party_size':6})
+        self.assertEqual(self.queue()[0]['party_size'],6)
+        rows=list(csv.DictReader(io.StringIO(self.client.get('/api/export?date=2026-10-09').get_data(as_text=True))))
+        self.assertEqual(rows[0]['party_size'],'6')
+        self.update(id_,{'status':'archived'})
+        self.update(id_,{'status':'waiting','flight_id':self.flights[1]['id']})
+        self.assertEqual(self.queue(self.flights[1]['id'])[0]['party_size'],6)
+
+    def test_invalid_group_sizes_leave_record_unchanged(self):
+        id_=self.add()
+        for size in [0,-1,101,2.5,'2',True,None]:
+            self.assertEqual(self.update(id_,{'party_size':size}).status_code,400)
+            self.assertEqual(self.client.post(f'/api/flights/{self.flight}/passengers',json={'name':'Invalid Group','party_size':size},headers=self.headers).status_code,400)
+        self.assertEqual(len(self.queue()),1)
+        self.assertEqual(self.queue()[0]['party_size'],1)
+
+    def test_week_counts_bookings_and_people_separately(self):
+        first=self.add('First Group'); self.update(first,{'party_size':4})
+        archived=self.add('Archived Group'); self.update(archived,{'party_size':8,'status':'archived'})
+        next_flight=self.day('2026-10-10')['flights'][0]['id']
+        second=self.add('Next Day Group',flight=next_flight); self.update(second,{'party_size':3})
+        result=self.client.get('/api/week?start=2026-10-09').get_json()
+        self.assertEqual((result['start'],result['end']),('2026-10-09','2026-10-15'))
+        self.assertEqual(len(result['days']),7)
+        self.assertEqual((result['flight_count'],result['booking_count'],result['people_waiting'],result['queued_flights']),(77,2,7,2))
+        self.assertEqual((result['days'][0]['booking_count'],result['days'][0]['people_waiting']),(1,4))
+        self.assertEqual(result['days'][0]['flights'][0]['people_waiting'],4)
+        self.assertNotIn('passengers',result['days'][0]['flights'][0])
+
+    def test_week_preview_does_not_freeze_future_schedule(self):
+        response=self.client.get('/api/week?start=2026-10-09')
+        self.assertEqual(response.status_code,200)
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM flights').fetchone()[0],11)
+        template=self.flights[0]['schedule_id']
+        self.client.patch(f'/api/schedule/{template}',json={'name':'New Schedule Name','departure':'08:15'},headers=self.headers)
+        week=self.client.get('/api/week?start=2026-10-09').get_json()
+        self.assertEqual(week['days'][0]['flights'][0]['name'],'Siberia Experience')
+        self.assertEqual(week['days'][1]['flights'][0]['name'],'New Schedule Name')
+        self.assertIsNone(week['days'][1]['flights'][0]['id'])
+
+    def test_week_date_validation_and_month_boundary(self):
+        for start in ['bad','2100-12-26','1999-12-31']:
+            self.assertEqual(self.client.get('/api/week?start='+start).status_code,400)
+        week=self.client.get('/api/week?start=2026-10-29').get_json()
+        self.assertEqual(week['end'],'2026-11-04')
+        self.assertEqual([d['date'] for d in week['days']],['2026-10-29','2026-10-30','2026-10-31','2026-11-01','2026-11-02','2026-11-03','2026-11-04'])
+
+    def test_legacy_database_migrates_with_backup_and_no_lost_records(self):
+        id_=self.add('Existing Guest','existing@example.test')
+        before=self.queue()[0]
+        with sqlite3.connect(self.database) as connection:
+            connection.execute('ALTER TABLE passengers DROP COLUMN party_size')
+        create_app(self.config)
+        after=self.queue()[0]
+        self.assertEqual(after,before)
+        backup=Path(self.database+'.before-group-size.backup')
+        self.assertTrue(backup.exists())
+        with sqlite3.connect(backup) as connection:
+            self.assertNotIn('party_size',{row[1] for row in connection.execute('PRAGMA table_info(passengers)')})
+            self.assertEqual(connection.execute('SELECT id,name,contact FROM passengers').fetchone(),(id_,'Existing Guest','existing@example.test'))
+        create_app(self.config)
+        self.assertEqual(self.queue(),[after])
 
 
 if __name__=='__main__':
