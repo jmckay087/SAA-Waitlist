@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import click
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for, Response
+from browser_backup import browser_backup
 
 NZ = ZoneInfo('Pacific/Auckland')
 ROOT = Path(__file__).parent
@@ -387,6 +388,15 @@ def create_app(test_config=None):
     def export_day():
         selected = valid_date(request.args.get('date',datetime.now(NZ).date().isoformat()))
         return Response(export_rows(selected),mimetype='text/csv',headers={'Content-Disposition':f'attachment; filename="saa-waitlist-{selected}.csv"'})
+
+    @app.get('/api/backup')
+    def full_backup():
+        with connect() as connection:
+            connection.execute('BEGIN')
+            data = browser_backup(connection)
+        response = jsonify(data)
+        response.headers['Content-Disposition'] = 'attachment; filename="southern-alps-air-backup.json"'
+        return response
 
     @app.get('/health')
     def health():

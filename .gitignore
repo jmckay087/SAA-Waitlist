@@ -4,3 +4,5 @@ __pycache__/
 instance/
 .env
 *.csv
+_site/
+southern-alps-air-*.json

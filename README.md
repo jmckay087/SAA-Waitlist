@@ -4,6 +4,12 @@ A staff workspace with a seven-day operations dashboard and ordered daily flight
 
 ## Run
 
+For the **free website on a Windows computer**, see [browser website and local
+saving](docs/browser-website.md). Open it in Chrome or Edge; the website saves
+waitlists in that browser and receives updates through GitHub Pages. Full backup
+and restore controls are included. The Python instructions below are for the
+existing local app, including transferring old bookings to the browser edition.
+
 Requires Python 3.12 or newer with the Pacific/Auckland time-zone database.
 
 For a downloaded copy, unzip it, open a terminal in the extracted folder, and run
@@ -72,6 +78,12 @@ The black, white, and yellow theme follows the supplied Southern Alps Air logo. 
 
 ## Data and staff access
 
+The browser website stores data in the current browser profile using IndexedDB,
+with no customer uploads or shared database. Download a full backup regularly.
+Its public interface has no staff sign-in; access to records follows access to
+that Windows account/browser profile. The settings below apply to the Python
+edition.
+
 Data lives in `instance/waitlist.sqlite3`; this directory is ignored by Git. Back up the database before changing machines. For a consistent backup while the app runs, use Python's SQLite backup API or SQLite's `.backup` command. Do not publish an onboarding snapshot containing actual customer data or distribute the session-key file.
 
 `WAITLIST_DATABASE` selects a different persistent database file. The schedule is seeded once, so restarting does not reset it or overwrite edits. Restarting does not clear waitlists. Dates have separate lists.
@@ -96,3 +108,6 @@ The export command refuses to overwrite an existing file. Spreadsheet formula-li
 ```
 
 The automated suite covers persistence, day/flight isolation, queue order, archive/restore, group-size validation and exports, migrating an older database, moving and editing entries, simultaneous additions, schedule changes, seven-day totals, schedule previews, exports, CSRF, and staff authentication. Tests use temporary databases; they do not add customers to the operating database.
+
+The Pages workflow also runs the real-browser checks described in the
+[browser website guide](docs/browser-website.md) before publishing.

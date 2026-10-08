@@ -162,11 +162,31 @@ class WaitlistTest(unittest.TestCase):
         self.assertEqual(rows[0]['contact'],"'+6421000000")
         self.assertEqual(self.client.get('/api/export?date=bad').status_code,400)
 
+    def test_full_backup_preserves_data_for_browser_migration(self):
+        first = self.add('Backup Guest', 'guest@example.test')
+        self.update(first, {'party_size': 4, 'notes': 'Keep this note'})
+        second = self.add('Archived Guest')
+        self.update(second, {'status': 'archived'})
+        template = self.flights[0]['schedule_id']
+        self.client.patch(f'/api/schedule/{template}', json={'active': False}, headers=self.headers)
+        response = self.client.get('/api/backup')
+        self.assertEqual(response.status_code, 200)
+        backup = response.get_json()
+        self.assertEqual((backup['format'], backup['version'], backup['data']['schema_version']),
+                         ('southern-alps-air-waitlist', 1, 1))
+        self.assertEqual(len(backup['data']['flights']), 11)
+        records = backup['data']['passengers']
+        self.assertEqual([(p['id'], p['party_size'], p['status']) for p in records], [(first, 4, 'waiting'), (second, 1, 'archived')])
+        self.assertEqual((records[0]['contact'], records[0]['notes']), ('guest@example.test', 'Keep this note'))
+        self.assertEqual(next(f for f in backup['data']['schedule'] if f['id'] == template)['active'], 0)
+        self.assertNotIn('session', response.get_data(as_text=True))
+
     def test_authentication_guards_data_and_logout(self):
         self.app.config['STAFF_PASSWORD']='test-password'
         self.assertEqual(self.client.get('/api/day').status_code,401)
         self.assertEqual(self.client.get('/api/export').status_code,401)
         self.assertEqual(self.client.get('/api/week').status_code,401)
+        self.assertEqual(self.client.get('/api/backup').status_code,401)
         self.assertEqual(self.client.get('/').status_code,302)
         page=self.client.get('/login').get_data(as_text=True)
         token=re.search(r'name="csrf" value="([^"]+)"',page).group(1)

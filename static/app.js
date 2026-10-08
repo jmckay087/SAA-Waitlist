@@ -5,6 +5,7 @@ const state = { flights: [], selected: null, filter: 'waiting', date: nzDate(), 
   view: 'dashboard', weekStart: nzDate(), week: null, weekLoad: 0 };
 let toastTimer;
 let confirmation;
+let browserDataReplaced = false;
 const booking = { date: '', weekStart: '', flights: [], preferred: null, load: 0, loading: false, saving: false };
 
 function nzDate() {
@@ -26,6 +27,10 @@ function waiting(flight) { return flight.passengers.filter(p => p.status === 'wa
 function people(flight) { return waiting(flight).reduce((count, p) => count + p.party_size, 0); }
 function setError(error) { $('#app-error').textContent = error.message || String(error); $('#app-error').hidden = false; }
 async function api(path, method = 'GET', data) {
+  if (window.localWaitlist) {
+    if (browserDataReplaced && method !== 'GET') throw new Error('Waitlists were restored in another tab. Close this form and reopen it before saving.');
+    return window.localWaitlist.request(path, method, data);
+  }
   const options = { method, headers: { 'X-CSRF-Token': csrf } };
   if (data) { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(data); }
   let response;
@@ -43,7 +48,7 @@ async function loadDay() {
   $('#day-picker').value = selectedDate;
   $('#date-display').textContent = new Intl.DateTimeFormat('en-NZ', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Pacific/Auckland' }).format(new Date(selectedDate + 'T12:00:00+12:00'));
   $('#day-label').textContent = dateLabel(selectedDate);
-  $('#export-day').href = `/api/export?date=${selectedDate}`;
+  $('#export-day').href = window.localWaitlist ? '#' : `/api/export?date=${selectedDate}`;
   try {
     const data = await api(`/api/day?date=${selectedDate}`);
     if (load !== state.load) return;
@@ -367,6 +372,65 @@ $('#previous-day').addEventListener('click', () => shiftDay(-1)); $('#next-day')
 $('#refresh').addEventListener('click', loadCurrent);
 $('#logout')?.addEventListener('click', async () => { try { await api('/api/logout','POST',{}); window.location.assign('/login'); } catch (error) { setError(error); } });
 function updateClock() { $('#nz-clock').textContent = new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date()).toUpperCase(); }
+function downloadFile(contents, type, filename) {
+  const url = URL.createObjectURL(new Blob([contents], { type }));
+  const link = node('a'); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+async function openData() {
+  openDialog('#data-dialog');
+  if (window.localWaitlist) {
+    try { $('#download-safety-backup').hidden = !(await window.localWaitlist.previousBackup()); }
+    catch (error) { $('#data-dialog .dialog-error').textContent = error.message; }
+  }
+}
+$('#data-nav').addEventListener('click', openData);
+$('#backup-shortcut')?.addEventListener('click', openData);
+$('#download-backup').addEventListener('click', async () => {
+  const button = $('#download-backup'); button.disabled = true;
+  try {
+    const backup = window.localWaitlist ? await window.localWaitlist.backup() : await api('/api/backup');
+    downloadFile(JSON.stringify(backup, null, 2), 'application/json', `southern-alps-air-backup-${nzDate()}.json`);
+    toast('Full backup downloaded');
+  } catch (error) { $('#data-dialog .dialog-error').textContent = error.message; }
+  finally { button.disabled = false; }
+});
+if (window.localWaitlist) {
+  $('#export-day').addEventListener('click', async event => {
+    event.preventDefault();
+    try { downloadFile(await window.localWaitlist.exportCSV(state.date), 'text/csv;charset=utf-8', `saa-waitlist-${state.date}.csv`); }
+    catch (error) { setError(error); }
+  });
+  $('#choose-backup').addEventListener('click', () => $('#restore-file').click());
+  $('#restore-file').addEventListener('change', async event => {
+    const file = event.target.files[0]; if (!file) return;
+    const button = $('#choose-backup'); button.disabled = true; $('#data-dialog .dialog-error').textContent = '';
+    try {
+      const backup = await window.localWaitlist.prepareRestore(file);
+      const waiting = backup.passengers.filter(p => p.status === 'waiting');
+      $('#data-dialog').close();
+      confirm('Replace waitlists from this backup?', `${file.name}: ${waiting.length} waiting bookings, ${backup.passengers.length - waiting.length} archived bookings, and ${backup.flights.length} saved flights. This replaces all current lists and the schedule. A safety copy of your current lists will be kept.`, async () => {
+        await window.localWaitlist.restore(backup); state.selected = null; await loadCurrent(); toast('Waitlists restored from backup');
+      }, 'Replace and restore');
+    } catch (error) { $('#data-dialog .dialog-error').textContent = error.message; }
+    finally { button.disabled = false; event.target.value = ''; }
+  });
+  $('#download-safety-backup').addEventListener('click', async () => {
+    try {
+      const backup = await window.localWaitlist.previousBackup();
+      if (!backup) throw new Error('There is no earlier restore backup in this browser.');
+      downloadFile(JSON.stringify(backup, null, 2), 'application/json', `southern-alps-air-before-restore-${nzDate()}.json`);
+    } catch (error) { $('#data-dialog .dialog-error').textContent = error.message; }
+  });
+  window.localWaitlist.subscribe(type => {
+    if (type === 'restored') browserDataReplaced = true;
+    if (document.querySelector('dialog[open]')) { if (type === 'restored') toast('Lists were restored in another tab. Close this form before making changes.'); }
+    else { browserDataReplaced = false; loadCurrent(); }
+  });
+  document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => {
+    if (browserDataReplaced && !document.querySelector('dialog[open]')) { browserDataReplaced = false; loadCurrent(); }
+  }));
+}
 updateClock(); setInterval(updateClock, 30000);
 setInterval(() => { if (!document.hidden && !document.querySelector('dialog[open]')) loadCurrent(); }, 30000);
 setView('dashboard'); loadWeek();
