@@ -53,8 +53,10 @@ The screenshot uses example test data, not customer records.
 ## Use the waitlist
 
 - Select the operations date. “Today” uses New Zealand time.
-- Select a flight and choose **Add booking**. Enter the lead guest and **number of people** (1–100); contact and notes are optional. Group size is not a flight-capacity limit.
-- Each booking occupies one position in the queue. Use **↑ / ↓** to change the order. **Edit** can change group size and contact details or move the booking to another flight on the same date.
+- Choose **Add booking** from the dashboard or a daily flight list. Inside the form, use **Today**, **Tomorrow**, the seven date buttons, or the week arrows to choose the flight date. The calendar field also lets you jump directly to any date.
+- Changing dates keeps the guest's name, group size, contact, and notes. The same scheduled departure stays selected when available on the new date; otherwise, choose a departure from that day's flights. The selected date is shown in full beneath the date buttons.
+- Enter the lead guest and **number of people** (1–100); contact and notes are optional. Group size is not a flight-capacity limit. Saving opens the correct date and flight's waitlist.
+- Each booking occupies one position in the queue. Use **↑ / ↓** to change the order. **Edit** can change group size and contact details or move the booking to another flight or date. A moved booking joins the end of the destination waitlist.
 - **Archive** removes someone from the active queue. The Archived tab lets you restore them to the end of the list.
 - **Flight details** changes a single day's flight name or time. **Add a flight** creates an extra departure just for that date.
 - **Edit daily schedule** maintains recurring departures. Updates and removals affect days that have not yet been created. Existing daily flights and their waitlists are preserved. New recurring departures also appear when an already-created day is refreshed.

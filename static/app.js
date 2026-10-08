@@ -5,6 +5,7 @@ const state = { flights: [], selected: null, filter: 'waiting', date: nzDate(), 
   view: 'dashboard', weekStart: nzDate(), week: null, weekLoad: 0 };
 let toastTimer;
 let confirmation;
+const booking = { date: '', weekStart: '', flights: [], preferred: null, load: 0, loading: false, saving: false };
 
 function nzDate() {
   const parts = new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
@@ -229,10 +230,61 @@ function openPassenger(passenger) {
   const form = $('#passenger-form'); form.reset(); form.elements.namedItem('id').value = passenger?.id || '';
   form.elements.name.value = passenger?.name || ''; form.contact.value = passenger?.contact || ''; form.notes.value = passenger?.notes || '';
   form.party_size.value = passenger?.party_size || 1;
-  const select = form.flight_id; select.replaceChildren();
-  for (const flight of state.flights) { const time = timeLabel(flight.departure); const option = node('option', '', `${time.time} ${time.period} · ${flight.name}`); option.value = flight.id; select.append(option); }
-  select.value = passenger?.flight_id || state.selected;
+  booking.preferred = state.view === 'daily' ? state.flights.find(f => f.id === (passenger?.flight_id || state.selected)) || null : null;
+  booking.weekStart = state.view === 'dashboard' ? state.weekStart : state.date;
+  booking.saving = false; form.inert = false;
+  chooseBookingDate(booking.weekStart);
   $('#passenger-dialog-title').textContent = passenger ? 'Edit booking' : 'Add a booking'; openDialog('#passenger-dialog'); form.elements.name.focus();
+}
+function syncBookingSave() {
+  const form = $('#passenger-form');
+  form.querySelector('[type="submit"]').disabled = booking.saving || booking.loading || !form.flight_date.validity.valid || form.flight_date.value !== booking.date || !booking.flights.some(f => f.id === Number(form.flight_id.value));
+}
+function renderBookingDates() {
+  const start = booking.weekStart;
+  $('#booking-week-range').textContent = `${shortDate(start, { day: 'numeric', month: 'short' })} – ${shortDate(addDays(start, 6), { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  $('#booking-selected-date').textContent = dateLabel(booking.date);
+  $('#booking-previous-week').disabled = addDays(booking.date, -7) < '2000-01-01';
+  $('#booking-next-week').disabled = addDays(booking.date, 7) > '2100-12-31';
+  const days = $('#booking-days'); const focusedDate = days.contains(document.activeElement) ? document.activeElement.dataset.date : null; days.replaceChildren();
+  for (let index = 0; index < 7; index++) {
+    const date = addDays(start, index);
+    const day = button('', 'booking-day' + (date === booking.date ? ' selected' : ''), () => chooseBookingDate(date), dateLabel(date));
+    day.dataset.date = date;
+    day.setAttribute('aria-pressed', String(date === booking.date));
+    day.append(node('span', '', shortDate(date, { weekday: 'short' })), node('strong', '', shortDate(date, { day: 'numeric' })), node('small', '', shortDate(date, { month: 'short' })));
+    days.append(day);
+  }
+  if (focusedDate) days.querySelector(`[data-date="${focusedDate}"]`)?.focus();
+  for (const [id, date] of [['#booking-today', nzDate()], ['#booking-tomorrow', addDays(nzDate(), 1)]]) $(id).setAttribute('aria-pressed', String(date === booking.date));
+}
+async function chooseBookingDate(date) {
+  if (booking.saving || date < '2000-01-01' || date > '2100-12-31') return;
+  const request = ++booking.load;
+  booking.date = date; booking.loading = true; booking.flights = [];
+  if (date < booking.weekStart || date > addDays(booking.weekStart, 6)) booking.weekStart = date;
+  if (booking.weekStart > '2100-12-25') booking.weekStart = '2100-12-25';
+  const form = $('#passenger-form'); form.flight_date.value = date;
+  const select = form.flight_id; select.replaceChildren(new Option('Loading flights…', '')); select.disabled = true;
+  $('#booking-retry').hidden = true; $('#booking-flight-status').textContent = 'Loading flights for this date…';
+  $('#passenger-form .dialog-error').textContent = '';
+  renderBookingDates(); syncBookingSave();
+  try {
+    const data = await api(`/api/day?date=${date}`);
+    if (request !== booking.load) return;
+    booking.flights = data.flights; select.replaceChildren(new Option('Choose a flight', ''));
+    for (const flight of data.flights) { const time = timeLabel(flight.departure); select.append(new Option(`${time.time} ${time.period} · ${flight.name}`, flight.id)); }
+    const preferred = booking.preferred;
+    const match = preferred ? data.flights.find(f => f.id === preferred.id || (preferred.schedule_id !== null && f.schedule_id === preferred.schedule_id) || (f.name === preferred.name && f.departure === preferred.departure)) : data.flights[0];
+    select.value = match?.id || '';
+    if (match) booking.preferred = match;
+    select.disabled = !data.flights.length;
+    $('#booking-flight-status').textContent = !data.flights.length ? 'No flights on this date. Choose another date or add a departure in Daily waitlist.' : preferred && !match ? 'That flight is not on this date. Please choose another departure.' : '';
+  } catch (error) {
+    if (request !== booking.load) return;
+    select.replaceChildren(new Option('Flights unavailable', ''));
+    $('#booking-flight-status').textContent = error.message; $('#booking-retry').hidden = false;
+  } finally { if (request === booking.load) { booking.loading = false; syncBookingSave(); } }
 }
 function openFlight(extra = false) {
   const form = $('#flight-form'); form.reset(); const flight = extra ? null : selectedFlight();
@@ -260,14 +312,17 @@ function bindForm(id, action) {
   form.addEventListener('submit', async event => {
     event.preventDefault(); const submit = form.querySelector('[type="submit"]'); if (submit.disabled) return; submit.disabled = true;
     const error = form.querySelector('.dialog-error'); error.textContent = '';
-    try { await action(form); } catch (exception) { error.textContent = exception.message; } finally { submit.disabled = false; }
+    try { await action(form); } catch (exception) { error.textContent = exception.message; } finally { if (id === '#passenger-form') syncBookingSave(); else submit.disabled = false; }
   });
 }
 bindForm('#passenger-form', async form => {
-  const data = { name: form.elements.name.value.trim(), contact: form.contact.value.trim(), notes: form.notes.value.trim(), flight_id: Number(form.flight_id.value), party_size: Number(form.party_size.value) };
+  const data = { name: form.elements.name.value.trim(), contact: form.contact.value.trim(), notes: form.notes.value.trim(), flight_id: Number(form.flight_id.value), flight_date: form.flight_date.value, party_size: Number(form.party_size.value) };
   const id = form.elements.namedItem('id').value;
-  await api(id ? `/api/passengers/${id}` : `/api/flights/${data.flight_id}/passengers`, id ? 'PATCH' : 'POST', data);
-  state.selected = data.flight_id; state.filter = 'waiting'; state.search = ''; $('#passenger-search').value = ''; $('#passenger-dialog').close(); await loadDay(); toast(id ? 'Booking updated' : 'Booking added to the waitlist');
+  booking.saving = true; form.inert = true;
+  try {
+    await api(id ? `/api/passengers/${id}` : `/api/flights/${data.flight_id}/passengers`, id ? 'PATCH' : 'POST', data);
+    $('#passenger-dialog').close(); await openDaily(data.flight_date, { id: data.flight_id }); toast(id ? 'Booking updated' : 'Booking added to the waitlist');
+  } finally { booking.saving = false; form.inert = false; }
 });
 bindForm('#flight-form', async form => {
   const data = { name: form.elements.name.value.trim(), departure: form.departure.value, date: state.date }; const id = form.elements.namedItem('id').value;
@@ -279,13 +334,24 @@ bindForm('#schedule-form', async form => {
   await api(id ? `/api/schedule/${id}` : '/api/schedule', id ? 'PATCH' : 'POST', data);
   form.reset(); form.elements.namedItem('id').value = ''; $('#save-schedule').textContent = 'Add departure +'; await renderSchedule(); await loadCurrent(); toast('Daily schedule saved');
 });
-document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => { const dialog = button.closest('dialog'); if (dialog.id !== 'passenger-dialog' || !booking.saving) dialog.close(); }));
 $('#reset-schedule').addEventListener('click', () => { $('#schedule-form').reset(); $('#schedule-form').elements.namedItem('id').value = ''; $('#save-schedule').textContent = 'Add departure +'; });
 $('#add-passenger').addEventListener('click', () => openPassenger()); $('#flight-details').addEventListener('click', () => openFlight()); $('#add-extra').addEventListener('click', () => openFlight(true));
 $('#schedule-nav').addEventListener('click', openSchedule); $('#manage-schedule').addEventListener('click', openSchedule);
 $('#dashboard-nav').addEventListener('click', () => { if (state.view === 'daily' && (state.date < state.weekStart || state.date > addDays(state.weekStart,6))) state.weekStart = state.date > '2100-12-25' ? '2100-12-25' : state.date; setView('dashboard'); loadWeek(); $('#main').focus(); });
 $('#operations-nav').addEventListener('click', () => openDaily(state.date >= state.weekStart && state.date <= addDays(state.weekStart,6) ? state.date : state.weekStart));
 $('#open-selected-day').addEventListener('click', () => openDaily(state.weekStart));
+$('#quick-add-booking').addEventListener('click', () => openPassenger());
+$('#booking-today').addEventListener('click', () => chooseBookingDate(nzDate()));
+$('#booking-tomorrow').addEventListener('click', () => chooseBookingDate(addDays(nzDate(), 1)));
+$('#booking-previous-week').addEventListener('click', () => { booking.weekStart = addDays(booking.weekStart, -7); chooseBookingDate(addDays(booking.date, -7)); });
+$('#booking-next-week').addEventListener('click', () => { booking.weekStart = addDays(booking.weekStart, 7); chooseBookingDate(addDays(booking.date, 7)); });
+$('#booking-date').addEventListener('input', syncBookingSave);
+$('#booking-date').addEventListener('change', event => { if (event.target.value && event.target.validity.valid) chooseBookingDate(event.target.value); });
+$('#booking-retry').addEventListener('click', () => chooseBookingDate(booking.date));
+$('#passenger-form').flight_id.addEventListener('change', event => { booking.preferred = booking.flights.find(f => f.id === Number(event.target.value)) || booking.preferred; syncBookingSave(); });
+$('#passenger-dialog').addEventListener('close', () => { booking.load++; });
+$('#passenger-dialog').addEventListener('cancel', event => { if (booking.saving) event.preventDefault(); });
 document.querySelectorAll('.list-tab').forEach(tab => tab.addEventListener('click', () => { state.filter = tab.dataset.filter; renderPassengers(); }));
 $('#passenger-search').addEventListener('input', event => { state.search = event.target.value.trim().toLowerCase(); renderPassengers(); });
 $('#day-picker').addEventListener('change', event => { if (event.target.value && event.target.validity.valid) {

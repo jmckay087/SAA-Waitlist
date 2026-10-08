@@ -213,6 +213,12 @@ def create_app(test_config=None):
     def next_position(connection, flight_id):
         return connection.execute("SELECT COALESCE(MAX(position),0)+1 FROM passengers WHERE flight_id=? AND status='waiting'", (flight_id,)).fetchone()[0]
 
+    def booking_flight(connection, flight_id, data):
+        flight = existing_flight(connection, flight_id)
+        if 'flight_date' in data and valid_date(data['flight_date']) != flight['flight_date']:
+            raise ValidationError('The flight does not match the selected date. Choose the flight again.')
+        return flight
+
     @app.get('/api/day')
     def day():
         selected = valid_date(request.args.get('date', datetime.now(NZ).date().isoformat()))
@@ -314,7 +320,7 @@ def create_app(test_config=None):
         party = group_size(data)
         with connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
-            existing_flight(connection, flight_id)
+            booking_flight(connection, flight_id, data)
             cursor = connection.execute('''INSERT INTO passengers (flight_id,name,contact,notes,position,created_at,party_size)
                 VALUES (?,?,?,?,?,?,?)''', (flight_id,name,contact,notes,next_position(connection,flight_id),datetime.now(NZ).isoformat(),party))
         return jsonify(id=cursor.lastrowid), 201
@@ -349,7 +355,7 @@ def create_app(test_config=None):
             flight_id = data.get('flight_id', passenger['flight_id'])
             if type(flight_id) is not int or flight_id < 1:
                 raise ValidationError('Choose a valid flight.')
-            existing_flight(connection, flight_id)
+            booking_flight(connection, flight_id, data)
             position = passenger['position']
             if flight_id != passenger['flight_id'] or (status == 'waiting' and passenger['status'] == 'archived'):
                 position = next_position(connection, flight_id)

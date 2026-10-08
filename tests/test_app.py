@@ -87,6 +87,34 @@ class WaitlistTest(unittest.TestCase):
         self.assertTrue(all(not f['passengers'] for f in next_day))
         self.assertNotEqual(next_day[0]['id'],self.flight)
 
+    def test_booking_can_move_to_another_date_without_losing_details(self):
+        first = self.add('Moving Guest', 'guest@example.test')
+        remaining = self.add('Staying Guest')
+        self.update(first, {'party_size': 4, 'notes': 'Call in the morning'})
+        target = self.day('2026-10-10')['flights'][0]['id']
+        already_there = self.add('Already Waiting', flight=target)
+        response = self.update(first, {'flight_id': target, 'flight_date': '2026-10-10'})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual([(p['id'], p['position']) for p in self.queue()], [(remaining, 1)])
+        queue = self.day('2026-10-10')['flights'][0]['passengers']
+        self.assertEqual([(p['id'], p['position']) for p in queue], [(already_there, 1), (first, 2)])
+        self.assertEqual((queue[1]['name'], queue[1]['contact'], queue[1]['party_size'], queue[1]['notes']),
+                         ('Moving Guest', 'guest@example.test', 4, 'Call in the morning'))
+
+    def test_booking_date_must_match_its_flight(self):
+        path = f'/api/flights/{self.flight}/passengers'
+        for date in ['2026-10-10', 'invalid', None]:
+            response = self.client.post(path, json={'name': 'New Guest', 'flight_date': date}, headers=self.headers)
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.queue(), [])
+        response = self.client.post(path, json={'name': 'New Guest', 'flight_date': '2026-10-09'}, headers=self.headers)
+        self.assertEqual(response.status_code, 201)
+        id_ = response.get_json()['id']
+        target = self.day('2026-10-10')['flights'][0]['id']
+        self.assertEqual(self.update(id_, {'flight_id': target, 'flight_date': '2026-10-09', 'name': 'Wrong Day'}).status_code, 400)
+        self.assertEqual(self.queue()[0]['name'], 'New Guest')
+        self.assertEqual(self.day('2026-10-10')['flights'][0]['passengers'], [])
+
     def test_validation_does_not_change_existing_entry(self):
         id_=self.add()
         for data in [{'name':''},{'contact':123},{'flight_id':99999},{'status':'seated'},{'notes':'x'*501}]:
