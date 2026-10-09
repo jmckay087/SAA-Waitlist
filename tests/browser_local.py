@@ -43,7 +43,7 @@ def run(site):
                     page.on('request', lambda request: requests.append((request.method, request.url)))
                 page = context.new_page(); attach(page); page.goto(address)
                 expect(page.locator('#quick-add-booking')).to_be_enabled()
-                expect(page.locator('#flight-count')).to_have_text('77')
+                expect(page.locator('#waiting-count')).to_have_text('0')
                 empty = page.evaluate('window.localWaitlist.backup()')
                 assert empty['data']['flights'] == [], 'Dashboard materialized future dates'
                 assert len(empty['data']['schedule']) == 11

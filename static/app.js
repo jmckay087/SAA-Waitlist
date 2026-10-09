@@ -107,11 +107,9 @@ async function openDaily(date = state.date, flight = null) {
 }
 function renderWeek() {
   const week = state.week;
-  $('#flight-count').textContent = week?.flight_count ?? '—';
   $('#waiting-count').textContent = week?.people_waiting ?? '—';
   $('#queued-flight-count').textContent = week?.queued_flights ?? '—';
   $('#booking-count').textContent = week?.booking_count ?? '—';
-  $('#flight-description').textContent = 'Scheduled across the next seven days';
   $('#waiting-description').textContent = 'People across all seven days';
   const cards = $('#week-days'); const head = $('#outlook-head'); const body = $('#outlook-body'); const followups = $('#followup-list');
   cards.replaceChildren(); head.replaceChildren(); body.replaceChildren(); followups.replaceChildren();
@@ -122,7 +120,7 @@ function renderWeek() {
     card.append(node('span', 'week-day-name', day.date === nzDate() ? 'TODAY' : shortDate(day.date, { weekday: 'short' }).toUpperCase()), node('span', 'week-day-date', shortDate(day.date, { day: 'numeric', month: 'short' })));
     const number = node('strong', 'week-day-people', day.people_waiting); number.append(node('small', '', day.people_waiting === 1 ? 'person waiting' : 'people waiting')); card.append(number);
     const meter = node('meter', 'week-meter'); meter.min = 0; meter.max = Math.max(1,...week.days.map(d => d.people_waiting)); meter.value = day.people_waiting; meter.setAttribute('aria-label', `${day.people_waiting} people waiting`); card.append(meter);
-    card.append(node('span', 'week-day-meta', `${day.booking_count} ${day.booking_count === 1 ? 'booking' : 'bookings'} · ${day.flight_count} flights`));
+    card.append(node('span', 'week-day-meta', `${day.booking_count} ${day.booking_count === 1 ? 'booking' : 'bookings'}`));
     cards.append(card);
   }
   const heading = node('tr'); heading.append(node('th', '', 'FLIGHT / DEPARTURE'));
@@ -163,11 +161,9 @@ function renderWeek() {
 }
 function render() {
   if (state.view !== 'daily') return;
-  $('#flight-count').textContent = state.flights.length;
   $('#waiting-count').textContent = state.flights.reduce((count, flight) => count + people(flight), 0);
   $('#booking-count').textContent = state.flights.reduce((count, flight) => count + waiting(flight).length, 0);
   $('#queued-flight-count').textContent = state.flights.filter(f => waiting(f).length).length;
-  $('#flight-description').textContent = `${state.flights.length} departures · ${state.date === nzDate() ? 'today' : 'selected day'}`;
   const totalLists = state.flights.filter(f => waiting(f).length).length;
   $('#waiting-description').textContent = `Across ${totalLists} ${totalLists === 1 ? 'flight waitlist' : 'flight waitlists'}`;
   const list = $('#flight-list'); list.replaceChildren();

@@ -45,7 +45,7 @@ If you configured `WAITLIST_DATABASE` to a custom location, it continues to sele
 
 - The app opens on **Dashboard**, showing seven days starting today in New Zealand time.
 - The summary distinguishes **people waiting** from **waitlist bookings**. A booking for four people counts as one booking and four people.
-- Day cards show waiting totals and departures. Choose a card to open that day's daily waitlist.
+- Day cards show people waiting and booking totals. Choose a card to open that day's daily waitlist.
 - **Flight outlook** shows waiting people for each departure across the seven days. Choose a cell to open that flight's list.
 - **Waitlists to follow up** links to the first six departures in the selected period with active waitlists.
 - Use the arrows to move forward/back by seven days, or the date picker to choose the first day. In Daily waitlist, those controls move one day at a time.
